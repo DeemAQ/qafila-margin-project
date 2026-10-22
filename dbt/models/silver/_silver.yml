@@ -57,6 +57,18 @@ models:
       - name: quantity
         data_tests: [positive]
 
+  - name: order_line_margin
+    description: >
+      Grain: one row per counted order line, with the cost version valid on its order date
+      (valid_from <= order_date < valid_to). NULL cost = uncosted line.
+    data_tests:
+      # also proves the point-in-time join never matches two versions
+      - unique:
+          column_name: "order_id || '-' || line_no"
+      - equal_row_count:
+          arguments:
+            compare_model: ref('order_lines')
+
 unit_tests:
   - name: last_file_wins_for_the_same_sku_and_week
     description: The W39 fix file replaces W39; rows from quarantine are ignored even if they sort last.
@@ -108,3 +120,28 @@ unit_tests:
         - {sku: A, unit_cost_sar: 5.00, valid_from: "2026-08-31", valid_to: "2026-09-07", is_current: false}
         - {sku: A, unit_cost_sar: 6.00, valid_from: "2026-09-07", valid_to: "2026-09-14", is_current: false}
         - {sku: A, unit_cost_sar: 5.00, valid_from: "2026-09-14", valid_to: null,         is_current: true}
+
+  - name: line_is_costed_at_the_version_valid_on_its_order_date
+    description: >
+      valid_to is exclusive: an order on the day a new version starts gets the new cost.
+      An order before the SKU's first quote, or for a SKU never quoted, is uncosted.
+    model: order_line_margin
+    given:
+      - input: ref('order_lines')
+        rows:
+          - {order_id: 1, line_no: 1, sku: A, order_date: "2026-09-06", quantity: 2, line_revenue_sar: 20.00}
+          - {order_id: 2, line_no: 1, sku: A, order_date: "2026-09-07", quantity: 2, line_revenue_sar: 20.00}
+          - {order_id: 3, line_no: 1, sku: A, order_date: "2026-09-30", quantity: 1, line_revenue_sar: 10.00}
+          - {order_id: 4, line_no: 1, sku: A, order_date: "2026-08-30", quantity: 1, line_revenue_sar: 10.00}
+          - {order_id: 5, line_no: 1, sku: Z, order_date: "2026-09-10", quantity: 1, line_revenue_sar: 10.00}
+      - input: ref('product_cost_history')
+        rows:
+          - {sku: A, unit_cost_sar: 5.00, valid_from: "2026-08-31", valid_to: "2026-09-07", is_current: false}
+          - {sku: A, unit_cost_sar: 6.00, valid_from: "2026-09-07", valid_to: null,         is_current: true}
+    expect:
+      rows:
+        - {order_id: 1, cost_valid_from: "2026-08-31", line_cost_sar: 10.00}
+        - {order_id: 2, cost_valid_from: "2026-09-07", line_cost_sar: 12.00}
+        - {order_id: 3, cost_valid_from: "2026-09-07", line_cost_sar: 6.00}
+        - {order_id: 4, cost_valid_from: null,         line_cost_sar: null}
+        - {order_id: 5, cost_valid_from: null,         line_cost_sar: null}

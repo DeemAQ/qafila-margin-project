@@ -26,7 +26,7 @@ uv run python tools/snapshots.py          # Iceberg history of the three tables 
 | `supplier_cost_quotes` | silver | `sku` × `valid_from` (last file wins) | view |
 | `product_cost_history` | silver | `sku` × cost version (SCD2) | table |
 | `order_lines` | silver | counted order line (delivered, qty > 0, from 2026-08-31) | table |
-| `order_line_margin` | gold | counted order line + the cost version valid on its date | table |
+| `order_line_margin` | silver | counted order line + the cost version valid on its date | table |
 | `weekly_margin` | gold | `iso_week` × `city` × `category` | table |
 | `price_quarantine` | quality | rejected supplier file row | table |
 
