@@ -104,4 +104,5 @@ I used an AI assistant (Claude) in these ways:
 
 - **`run.py`:** I co-wrote `ingest()` and `publish()` with AI. After an AI review, `publish()` was changed to use only public pyiceberg functions.
 - **dbt tests:** I co-wrote the data tests and unit tests with AI.
+- **README:** AI helped me write this README's Markdown (the tables, layout and wording).
 - **Review:** I used AI to check the project against the brief on new datasets and give me a score. I acted on its feedback: moving `order_line_margin` to silver and fixing this README.
