@@ -1,0 +1,110 @@
+version: 2
+
+models:
+  - name: supplier_price_checks
+    description: >
+      Grain: one row per supplier file row. reject_reason is 'unknown_sku' when the trimmed SKU isn't
+      in products, else 'invalid_cost' when the cost isn't a positive number, else NULL (usable).
+    columns:
+      - name: reject_reason
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [unknown_sku, invalid_cost]
+
+  - name: supplier_cost_quotes
+    description: >
+      Grain: one row per (sku, valid_from). Usable rows only; when several files quote the same SKU
+      and week, the file whose name sorts last wins (the W39 fix file beats W39).
+    data_tests:
+      - unique:
+          column_name: "sku || '@' || valid_from"
+
+  - name: product_cost_history
+    description: >
+      SCD2 supplier cost. Grain: one row per SKU per cost version. A version starts only when the
+      cost changes; valid_to is the next version's valid_from (exclusive), NULL when current.
+    data_tests:
+      - unique:
+          column_name: "sku || '@' || valid_from"
+    columns:
+      - name: sku
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_products')
+                field: sku
+      - name: unit_cost_sar
+        data_tests:
+          - not_null
+          - positive
+      - name: valid_from
+        data_tests: [not_null]
+
+  - name: order_lines
+    description: >
+      Grain: one row per counted order line (order_id, line_no): delivered, quantity > 0, Riyadh
+      order date on or after var('margin_start_date').
+    data_tests:
+      - unique:
+          column_name: "order_id || '-' || line_no"
+    columns:
+      - name: order_date
+        data_tests: [not_null]
+      - name: iso_week
+        data_tests: [not_null]
+      - name: quantity
+        data_tests: [positive]
+
+unit_tests:
+  - name: last_file_wins_for_the_same_sku_and_week
+    description: The W39 fix file replaces W39; rows from quarantine are ignored even if they sort last.
+    model: supplier_cost_quotes
+    given:
+      - input: ref('supplier_price_checks')
+        rows:
+          - {source_file: prices_2026-W39.csv,     source_row: 1, sku: A, valid_from: "2026-09-21", unit_cost_sar: 10.00, reject_reason: null}
+          - {source_file: prices_2026-W39_fix.csv, source_row: 1, sku: A, valid_from: "2026-09-21", unit_cost_sar: 9.00,  reject_reason: null}
+          - {source_file: prices_2026-W39.csv,     source_row: 2, sku: B, valid_from: "2026-09-21", unit_cost_sar: 0,     reject_reason: invalid_cost}
+          - {source_file: prices_2026-W39_fix.csv, source_row: 2, sku: B, valid_from: "2026-09-21", unit_cost_sar: 5.00,  reject_reason: null}
+          - {source_file: prices_2026-W39.csv,     source_row: 3, sku: C, valid_from: "2026-09-21", unit_cost_sar: 7.00,  reject_reason: null}
+          - {source_file: prices_2026-W39_fix.csv, source_row: 3, sku: C, valid_from: "2026-09-21", unit_cost_sar: -2,    reject_reason: invalid_cost}
+    expect:
+      rows:
+        - {sku: A, valid_from: "2026-09-21", unit_cost_sar: 9.00, source_file: prices_2026-W39_fix.csv}
+        - {sku: B, valid_from: "2026-09-21", unit_cost_sar: 5.00, source_file: prices_2026-W39_fix.csv}
+        - {sku: C, valid_from: "2026-09-21", unit_cost_sar: 7.00, source_file: prices_2026-W39.csv}
+
+  - name: scd2_new_version_only_when_cost_changes
+    description: >
+      A: quoted W36, missing W37 (keeps its cost), same cost W38 (no new version), new cost W39.
+      B: one quote, so one current version.
+    model: product_cost_history
+    given:
+      - input: ref('supplier_cost_quotes')
+        rows:
+          - {sku: A, valid_from: "2026-08-31", unit_cost_sar: 5.00}
+          - {sku: A, valid_from: "2026-09-14", unit_cost_sar: 5.00}
+          - {sku: A, valid_from: "2026-09-21", unit_cost_sar: 4.50}
+          - {sku: B, valid_from: "2026-09-07", unit_cost_sar: 8.25}
+    expect:
+      rows:
+        - {sku: A, unit_cost_sar: 5.00, valid_from: "2026-08-31", valid_to: "2026-09-21", is_current: false}
+        - {sku: A, unit_cost_sar: 4.50, valid_from: "2026-09-21", valid_to: null,         is_current: true}
+        - {sku: B, unit_cost_sar: 8.25, valid_from: "2026-09-07", valid_to: null,         is_current: true}
+
+  - name: scd2_cost_that_goes_back_is_a_new_version
+    description: 5 -> 6 -> 5 is three versions, not two.
+    model: product_cost_history
+    given:
+      - input: ref('supplier_cost_quotes')
+        rows:
+          - {sku: A, valid_from: "2026-08-31", unit_cost_sar: 5.00}
+          - {sku: A, valid_from: "2026-09-07", unit_cost_sar: 6.00}
+          - {sku: A, valid_from: "2026-09-14", unit_cost_sar: 5.00}
+    expect:
+      rows:
+        - {sku: A, unit_cost_sar: 5.00, valid_from: "2026-08-31", valid_to: "2026-09-07", is_current: false}
+        - {sku: A, unit_cost_sar: 6.00, valid_from: "2026-09-07", valid_to: "2026-09-14", is_current: false}
+        - {sku: A, unit_cost_sar: 5.00, valid_from: "2026-09-14", valid_to: null,         is_current: true}

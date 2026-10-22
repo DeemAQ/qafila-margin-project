@@ -6,6 +6,10 @@ model-paths: ["models"]
 macro-paths: ["macros"]
 test-paths: ["tests"]
 
+vars:
+  # Rule 7: order lines count from the first supplier week on (the one date the brief lets us fix).
+  margin_start_date: "2026-08-31"
+
 models:
   qafila_margin:
     staging:

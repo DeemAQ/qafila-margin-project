@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: price_quarantine
+    description: >
+      Grain: one row per rejected supplier file row (source_file, source_row), from every file,
+      including rows a later correction replaced. Quarantined rows are used nowhere else.
+    data_tests:
+      - unique:
+          column_name: "source_file || '#' || source_row"
+    columns:
+      - name: source_file
+        data_tests: [not_null]
+      - name: reason
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [unknown_sku, invalid_cost]

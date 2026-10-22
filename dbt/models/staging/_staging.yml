@@ -1,0 +1,85 @@
+version: 2
+
+models:
+  - name: stg_supplier_prices
+    description: >
+      Grain: one row per row of every supplier file (source_file, source_row). Cost text parsed to a
+      number rounded to 2 decimals (NULL when it isn't one), SKU trimmed, valid_from as a date.
+      Nothing is filtered here; supplier_price_checks decides what is usable.
+    data_tests:
+      - unique:
+          column_name: "source_file || '#' || source_row"
+    columns:
+      - name: source_file
+        data_tests: [not_null]
+      - name: valid_from
+        description: A row without a readable date can't be placed in the history; warn so it gets looked at.
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+
+  - name: stg_products
+    description: "Grain: one row per product. sku is trimmed (two SKUs in the app have trailing spaces)."
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+      - name: sku
+        data_tests: [not_null]
+
+  - name: stg_stores
+    description: "Grain: one row per store."
+    columns:
+      - name: store_id
+        data_tests: [unique, not_null]
+
+  - name: stg_orders
+    description: "Grain: one row per order. order_date is created_at (UTC) moved to Riyadh time (UTC+3)."
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: order_date
+        data_tests: [not_null]
+
+  - name: stg_order_items
+    description: "Grain: one row per order line (order_id, line_no), with line revenue."
+    data_tests:
+      - unique:
+          column_name: "order_id || '-' || line_no"
+
+unit_tests:
+  - name: supplier_costs_parse_every_format_the_files_use
+    description: Decimal commas, Arabic-Indic digits, padding and the renamed cost column all parse; junk becomes NULL.
+    model: stg_supplier_prices
+    given:
+      - input: source('raw', 'supplier_prices')
+        rows:
+          - {source_file: f.csv, source_row: 1, sku: "QF-A-1 ", valid_from: "2026-08-31", unit_cost: "9.49", cost_sar: null}
+          - {source_file: f.csv, source_row: 2, sku: "QF-A-2", valid_from: "2026-08-31", unit_cost: "9,49", cost_sar: null}
+          - {source_file: f.csv, source_row: 3, sku: "QF-A-3", valid_from: "2026-08-31", unit_cost: "٩٫٤٩", cost_sar: null}
+          - {source_file: f.csv, source_row: 4, sku: "QF-A-4", valid_from: "2026-08-31", unit_cost: null, cost_sar: " 12.5 "}
+          - {source_file: f.csv, source_row: 5, sku: "QF-A-5", valid_from: "2026-08-31", unit_cost: null, cost_sar: "-1"}
+          - {source_file: f.csv, source_row: 6, sku: "QF-A-6", valid_from: "2026-08-31", unit_cost: "n/a", cost_sar: null}
+          - {source_file: f.csv, source_row: 7, sku: "QF-A-7", valid_from: "2026-08-31", unit_cost: "3.456", cost_sar: null}
+    expect:
+      rows:
+        - {source_row: 1, sku: "QF-A-1", raw_cost: "9.49", unit_cost_sar: 9.49}
+        - {source_row: 2, sku: "QF-A-2", raw_cost: "9,49", unit_cost_sar: 9.49}
+        - {source_row: 3, sku: "QF-A-3", raw_cost: "٩٫٤٩", unit_cost_sar: 9.49}
+        - {source_row: 4, sku: "QF-A-4", raw_cost: " 12.5 ", unit_cost_sar: 12.5}
+        - {source_row: 5, sku: "QF-A-5", raw_cost: "-1", unit_cost_sar: -1}
+        - {source_row: 6, sku: "QF-A-6", raw_cost: "n/a", unit_cost_sar: null}
+        - {source_row: 7, sku: "QF-A-7", raw_cost: "3.456", unit_cost_sar: 3.46}
+
+  - name: order_date_is_the_riyadh_date
+    description: 21:00 UTC is already the next day in Riyadh.
+    model: stg_orders
+    given:
+      - input: source('raw', 'orders')
+        rows:
+          - {order_id: 1, created_at: "2026-08-30 20:59:59"}
+          - {order_id: 2, created_at: "2026-08-30 21:00:00"}
+    expect:
+      rows:
+        - {order_id: 1, order_date: "2026-08-30"}
+        - {order_id: 2, order_date: "2026-08-31"}
