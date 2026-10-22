@@ -17,10 +17,14 @@ import sys
 from contextlib import closing
 from pathlib import Path
 
+import uuid
+
 import duckdb
 import pyarrow as pa
+import pyarrow.parquet as pq
 from pyiceberg.catalog.sql import SqlCatalog
-from pyiceberg.io.pyarrow import _dataframe_to_data_files
+from pyiceberg.io.pyarrow import parquet_file_to_data_file, schema_to_pyarrow
+from pyiceberg.manifest import DataFile
 from pyiceberg.table import Table
 
 DBT_DIR = Path(__file__).resolve().parent / "dbt"
@@ -168,8 +172,8 @@ def publish_table(catalog: SqlCatalog, name: str, data: pa.Table) -> str:
 
     - New table: create it and append (snapshot 1).
     - Same rows as the current snapshot: do nothing, so a re-run adds no snapshot.
-    - Different rows: one OVERWRITE snapshot that removes the old data files and adds the new ones.
-      Table.overwrite() would commit a DELETE snapshot (an empty table) and then an APPEND, so the
+    - Different rows: one OVERWRITE snapshot that removes the old data files and adds a new one
+      (see write_data_file). Table.overwrite() would commit a DELETE snapshot (an empty table) and then an APPEND, so the
       snapshot just before the newest one would be empty; doing it in one snapshot avoids that.
     """
     catalog.create_namespace_if_not_exists(name.split(".")[0])
@@ -186,13 +190,25 @@ def publish_table(catalog: SqlCatalog, name: str, data: pa.Table) -> str:
         return f"unchanged, {len(data)} rows"
 
     old_files = [task.file for task in table.scan().plan_files()]
+    new_file = write_data_file(table, data)
     with table.transaction() as tx:
         with tx.update_snapshot().overwrite() as snapshot:
             for f in old_files:
                 snapshot.delete_data_file(f)
-            for f in _dataframe_to_data_files(tx.table_metadata, data, table.io, snapshot.commit_uuid):
-                snapshot.append_data_file(f)
+            snapshot.append_data_file(new_file)
     return f"overwritten, {len(data)} rows (snapshot {catalog.load_table(name).current_snapshot().snapshot_id})"
+
+
+def write_data_file(table: Table, data: pa.Table) -> DataFile:
+    """Write `data` as one Parquet file in the table's data folder and describe it for Iceberg.
+
+    Only public pyiceberg calls: the file carries the table's field ids (schema_to_pyarrow), and
+    parquet_file_to_data_file reads its footer for the stats Iceberg keeps in the manifest.
+    """
+    path = table.location_provider().new_data_location(f"{uuid.uuid4()}.parquet")
+    with table.io.new_output(path).create(overwrite=True) as out:
+        pq.write_table(data.cast(schema_to_pyarrow(table.schema())), out)
+    return parquet_file_to_data_file(table.io, table.metadata, path)
 
 
 def same_rows(table: Table, data: pa.Table) -> bool:
